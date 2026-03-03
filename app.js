@@ -1,5 +1,8 @@
 // ===== App State & DOM References =====
 const MAX_OUTPUT_LENGTH = 8192;
+const MAX_IMPORT_FILE_BYTES = 1024 * 1024;
+const MAX_UPLOAD_SVG_BYTES = 1024 * 1024;
+const MAX_FETCHED_SVG_BYTES = 1024 * 1024;
 
 const form = document.getElementById("noteForm");
 const outputEl = document.getElementById("output");
@@ -58,6 +61,7 @@ let selfhstVariantRefreshTimer = null;
 const svgColorCanvasCtx = document.createElement("canvas").getContext("2d");
 let publicTemplateCatalog = [];
 const presetLoadFlashTimers = new WeakMap();
+let blockImportedRemoteCustomImages = false;
 
 const rowConfigs = [
   { prefix: "title", defaultAlign: "center", defaultTag: "h2", bold: false, italic: false, strong: false, code: false },
@@ -77,6 +81,36 @@ function getEl(id) {
 function getSelectedRadioValue(name, fallback = "") {
   const checked = form.querySelector(`input[name="${name}"]:checked`);
   return checked ? checked.value : fallback;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 B";
+  }
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (value >= 1024) {
+    return `${Math.round(value / 1024)} KB`;
+  }
+  return `${Math.round(value)} B`;
+}
+
+function getTextByteLength(text) {
+  return new TextEncoder().encode(String(text || "")).length;
+}
+
+function assertFileSizeWithinLimit(file, maxBytes, label) {
+  if (file && Number.isFinite(file.size) && file.size > maxBytes) {
+    throw new Error(`${label} exceeds the ${formatBytes(maxBytes)} limit.`);
+  }
+}
+
+function assertTextSizeWithinLimit(text, maxBytes, label) {
+  if (getTextByteLength(text) > maxBytes) {
+    throw new Error(`${label} exceeds the ${formatBytes(maxBytes)} limit.`);
+  }
 }
 
 function normalizeVersion(version) {
@@ -194,6 +228,36 @@ function getSvgDimensions(svgEl) {
   }
 
   return { width: 1, height: 1 };
+}
+
+function fetchWithPrivacy(url, options = {}) {
+  return fetch(url, {
+    credentials: "omit",
+    referrerPolicy: "no-referrer",
+    ...options,
+  });
+}
+
+function parseAbsoluteHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    return /^(https?:)$/i.test(parsed.protocol) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isCrossOriginHttpUrl(value) {
+  const parsed = parseAbsoluteHttpUrl(value);
+  if (!parsed) {
+    return false;
+  }
+  return parsed.origin !== window.location.origin;
 }
 
 function resizeSvg(svgText, targetWidth) {
@@ -501,12 +565,18 @@ async function getExternalSvgText(url) {
     return externalSvgCache.get(url);
   }
 
-  const res = await fetch(url);
+  const res = await fetchWithPrivacy(url);
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}`);
   }
 
+  const contentLength = Number.parseInt(res.headers.get("content-length") || "", 10);
+  if (Number.isFinite(contentLength) && contentLength > MAX_FETCHED_SVG_BYTES) {
+    throw new Error(`External SVG exceeds the ${formatBytes(MAX_FETCHED_SVG_BYTES)} limit.`);
+  }
+
   const text = await res.text();
+  assertTextSizeWithinLimit(text, MAX_FETCHED_SVG_BYTES, "External SVG");
   externalSvgCache.set(url, text);
   return text;
 }
@@ -580,7 +650,7 @@ async function checkUrlExists(url) {
     return selfhstVariantExistsCache.get(url);
   }
   try {
-    const res = await fetch(url, { method: "HEAD" });
+    const res = await fetchWithPrivacy(url, { method: "HEAD" });
     const ok = res.ok;
     selfhstVariantExistsCache.set(url, ok);
     return ok;
@@ -772,12 +842,184 @@ function textToHtml(value, keepLineBreaks = false) {
   return escaped.replaceAll("\n", "<br />");
 }
 
-function rawTextToHtml(value, keepLineBreaks = false) {
-  const raw = String(value);
-  if (!keepLineBreaks) {
+function sanitizeHref(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  if (/^(https?:|mailto:|tel:)/i.test(raw) || raw.startsWith("/") || raw.startsWith("./") || raw.startsWith("../") || raw.startsWith("#")) {
     return raw;
   }
-  return raw.replaceAll("\n", "<br />");
+
+  return "";
+}
+
+function sanitizeFqdnHref(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  if (/^(https?:|mailto:)/i.test(raw)) {
+    return raw;
+  }
+
+  // Treat bare hostnames as HTTPS URLs by default for better UX.
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(raw) || /^localhost(?:[/:?#]|$)/i.test(raw)) {
+    return `https://${raw}`;
+  }
+
+  return "";
+}
+
+function sanitizeImageSrc(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  if (blockImportedRemoteCustomImages && isCrossOriginHttpUrl(raw)) {
+    return "";
+  }
+
+  if (/^https?:/i.test(raw) || raw.startsWith("/") || raw.startsWith("./") || raw.startsWith("../")) {
+    return raw;
+  }
+
+  if (/^data:image\/(?:png|gif|jpe?g|webp);base64,/i.test(raw)) {
+    return raw;
+  }
+
+  return "";
+}
+
+function sanitizeCustomHtml(value, keepLineBreaks = false) {
+  const allowedTags = new Set([
+    "a",
+    "b",
+    "blockquote",
+    "br",
+    "code",
+    "div",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "img",
+    "li",
+    "ol",
+    "p",
+    "pre",
+    "strong",
+    "ul",
+  ]);
+  const blockedTags = new Set(["script", "style", "iframe", "object", "embed", "svg", "math"]);
+  const template = document.createElement("template");
+  template.innerHTML = String(value || "");
+
+  function sanitizeNode(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const escaped = escapeHtml(node.textContent || "");
+      return keepLineBreaks ? escaped.replaceAll("\n", "<br />") : escaped;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return "";
+    }
+
+    const tag = node.nodeName.toLowerCase();
+    if (blockedTags.has(tag)) {
+      return "";
+    }
+
+    const childHtml = Array.from(node.childNodes)
+      .map((child) => sanitizeNode(child))
+      .join("");
+
+    if (!allowedTags.has(tag)) {
+      return childHtml;
+    }
+
+    if (tag === "br") {
+      return "<br />";
+    }
+
+    if (tag === "hr") {
+      return "<hr />";
+    }
+
+    if (tag === "a") {
+      const href = sanitizeHref(node.getAttribute("href"));
+      if (!href) {
+        return childHtml;
+      }
+
+      const target = node.getAttribute("target") === "_blank" ? '_blank' : "";
+      const relTokens = new Set(
+        String(node.getAttribute("rel") || "")
+          .split(/\s+/)
+          .map((token) => token.trim().toLowerCase())
+          .filter(Boolean)
+      );
+
+      if (target === "_blank") {
+        relTokens.add("noopener");
+        relTokens.add("noreferrer");
+      }
+
+      const attrs = [`href="${escapeHtml(href)}"`];
+      if (target) {
+        attrs.push(`target="${target}"`);
+      }
+      if (relTokens.size > 0) {
+        attrs.push(`rel="${escapeHtml(Array.from(relTokens).join(" "))}"`);
+      }
+      attrs.push('referrerpolicy="no-referrer"');
+
+      return `<a ${attrs.join(" ")}>${childHtml}</a>`;
+    }
+
+    if (tag === "img") {
+      const src = sanitizeImageSrc(node.getAttribute("src"));
+      if (!src) {
+        return "";
+      }
+
+      const attrs = [`src="${escapeHtml(src)}"`];
+      const alt = node.getAttribute("alt");
+      const title = node.getAttribute("title");
+      const width = node.getAttribute("width");
+      const height = node.getAttribute("height");
+
+      if (alt !== null) {
+        attrs.push(`alt="${escapeHtml(alt)}"`);
+      }
+      if (title) {
+        attrs.push(`title="${escapeHtml(title)}"`);
+      }
+      if (width && /^[0-9]{1,4}$/.test(width.trim())) {
+        attrs.push(`width="${width.trim()}"`);
+      }
+      if (height && /^[0-9]{1,4}$/.test(height.trim())) {
+        attrs.push(`height="${height.trim()}"`);
+      }
+      attrs.push('referrerpolicy="no-referrer"');
+
+      return `<img ${attrs.join(" ")} />`;
+    }
+
+    return `<${tag}>${childHtml}</${tag}>`;
+  }
+
+  return Array.from(template.content.childNodes)
+    .map((node) => sanitizeNode(node))
+    .join("");
 }
 
 function wrapTextForHeading(textHtml, format) {
@@ -826,6 +1068,10 @@ function buildTextRow({ align, icon, textHtml, format }) {
 
   const textOnly = wrapTextForPlain(textHtml, format);
   return buildRowDiv({ align, contentHtml: `${iconHtml}${textOnly}` });
+}
+
+function buildSafeImageTag(src, alt = "App icon") {
+  return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" referrerpolicy="no-referrer" />`;
 }
 
 // ===== Row Ordering & Visibility =====
@@ -961,7 +1207,7 @@ function buildNoteHtml() {
   const lines = [];
 
   if (iconResolvedSrc) {
-    byKey.icon = [buildRowDiv({ align: getIconAlign(), contentHtml: `<img src="${escapeHtml(iconResolvedSrc)}" alt="App icon" />` })];
+    byKey.icon = [buildRowDiv({ align: getIconAlign(), contentHtml: buildSafeImageTag(iconResolvedSrc, "App icon") })];
   }
 
   const titleText = getEl("titleText").value.trim();
@@ -973,10 +1219,10 @@ function buildNoteHtml() {
   const fqdnLabel = getEl("fqdnLabel").value.trim();
   if (fqdnLabel) {
     const format = getFormat("fqdn");
-    const fqdnUrl = getEl("fqdnUrl").value.trim();
+    const fqdnUrl = sanitizeFqdnHref(getEl("fqdnUrl").value);
     const label = textToHtml(fqdnLabel);
     const linked = fqdnUrl
-      ? `<a href="${escapeHtml(fqdnUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+      ? `<a href="${escapeHtml(fqdnUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${label}</a>`
       : label;
     byKey.fqdn = [buildTextRow({ align: format.align, icon: getEl("fqdnEmoji").value, textHtml: linked, format })];
   }
@@ -998,7 +1244,7 @@ function buildNoteHtml() {
   const customText = getEl("customText").value.trim();
   if (customText) {
     const format = getFormat("custom");
-    byKey.custom = [buildTextRow({ align: format.align, icon: "", textHtml: rawTextToHtml(customText, true), format })];
+    byKey.custom = [buildTextRow({ align: format.align, icon: "", textHtml: sanitizeCustomHtml(customText, true), format })];
   }
 
   for (const key of getOrderedRowKeys()) {
@@ -1123,10 +1369,13 @@ function applyRowState(prefix, rowState = {}) {
 }
 
 // Non-destructive apply: omitted properties are intentionally left untouched.
-async function applySettings(settings) {
+async function applySettings(settings, options = {}) {
   if (!settings || typeof settings !== "object") {
     throw new Error("Invalid settings format.");
   }
+
+  const source = options && typeof options === "object" ? options.source : "";
+  let blockedImportedRemoteIcon = false;
 
   if (Array.isArray(settings.rowOrder)) {
     const requestedOrder = settings.rowOrder.filter((k) => ROW_KEYS.includes(k));
@@ -1157,6 +1406,10 @@ async function applySettings(settings) {
     }
     if (typeof settings.icon.url === "string") {
       iconUrlEl.value = settings.icon.url;
+      if (source === "import" && isCrossOriginHttpUrl(settings.icon.url)) {
+        setIconMode("none");
+        blockedImportedRemoteIcon = true;
+      }
     }
     if (typeof settings.icon.embedSvg === "boolean") {
       iconEmbedSvgEl.checked = settings.icon.embedSvg;
@@ -1180,7 +1433,10 @@ async function applySettings(settings) {
     if (typeof settings.fields.fqdnLabel === "string") getEl("fqdnLabel").value = settings.fields.fqdnLabel;
     if (typeof settings.fields.fqdnUrl === "string") getEl("fqdnUrl").value = settings.fields.fqdnUrl;
     if (typeof settings.fields.networkText === "string") getEl("networkText").value = settings.fields.networkText;
-    if (typeof settings.fields.customText === "string") getEl("customText").value = settings.fields.customText;
+    if (typeof settings.fields.customText === "string") {
+      getEl("customText").value = settings.fields.customText;
+      blockImportedRemoteCustomImages = source === "import" && /<img\b/i.test(settings.fields.customText);
+    }
 
     if (Array.isArray(settings.fields.configLocations)) {
       configLocationsEl.innerHTML = "";
@@ -1204,6 +1460,9 @@ async function applySettings(settings) {
   }
 
   await prepareIcon();
+  if (blockedImportedRemoteIcon) {
+    setIconStatus("Imported external icon URL was not auto-loaded. Review it and re-enable LINK to allow the request.", true);
+  }
 }
 
 // ===== Template Catalog / Search =====
@@ -1225,11 +1484,13 @@ async function importSettingsFromFile(event) {
   }
 
   try {
+    assertFileSizeWithinLimit(file, MAX_IMPORT_FILE_BYTES, "Settings file");
     const text = await file.text();
+    assertTextSizeWithinLimit(text, MAX_IMPORT_FILE_BYTES, "Settings file");
     const parsed = JSON.parse(text);
-    await applySettings(parsed);
-  } catch {
-    console.error("Import failed: invalid JSON file.");
+    await applySettings(parsed, { source: "import" });
+  } catch (error) {
+    console.error(error instanceof Error ? `Import failed: ${error.message}` : "Import failed.");
   } finally {
     importFileEl.value = "";
   }
@@ -1610,13 +1871,19 @@ async function prepareIcon() {
     setIconStatus(`External SVG embedded at ${iconScaleEl.value}px width.`);
     updateIconControls();
     renderOutput();
-  } catch {
+  } catch (error) {
     if (token !== prepareToken) {
       return;
     }
 
-    iconResolvedSrc = url;
-    setIconStatus("Embedding failed. Falling back to direct SVG link.", true);
+    const message = error instanceof Error ? error.message : "Embedding failed. Falling back to direct SVG link.";
+    if (error instanceof Error && /exceeds the .* limit/i.test(error.message)) {
+      iconResolvedSrc = "";
+      setIconStatus(error.message, true);
+    } else {
+      iconResolvedSrc = url;
+      setIconStatus(message, true);
+    }
     updateIconControls();
     renderOutput();
   }
@@ -1706,11 +1973,13 @@ async function onIconUploadChange(event) {
   }
 
   try {
+    assertFileSizeWithinLimit(file, MAX_UPLOAD_SVG_BYTES, "Uploaded SVG");
     uploadSvgText = await readTextFile(file);
+    assertTextSizeWithinLimit(uploadSvgText, MAX_UPLOAD_SVG_BYTES, "Uploaded SVG");
     await prepareIcon();
-  } catch {
+  } catch (error) {
     uploadSvgText = "";
-    setIconStatus("Could not read uploaded SVG.", true);
+    setIconStatus(error instanceof Error ? error.message : "Could not read uploaded SVG.", true);
     await prepareIcon();
   }
 }
@@ -1743,7 +2012,7 @@ async function loadGithubStarCount() {
   githubStarCountEl.textContent = "--";
 
   try {
-    const res = await fetch("https://api.github.com/repos/JangaJones/pve-notebuddy");
+    const res = await fetchWithPrivacy("https://api.github.com/repos/JangaJones/pve-notebuddy");
     if (!res.ok) {
       return;
     }
@@ -1767,7 +2036,7 @@ async function loadReleaseVersionStatus() {
   setVersionStatus("Checking latest release...", "pending");
 
   try {
-    const res = await fetch("https://api.github.com/repos/JangaJones/pve-notebuddy/releases/latest");
+    const res = await fetchWithPrivacy("https://api.github.com/repos/JangaJones/pve-notebuddy/releases/latest");
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}`);
     }
@@ -1875,6 +2144,24 @@ function bootstrap() {
     radio.addEventListener("change", prepareIcon);
   }
   iconUrlEl.addEventListener("input", prepareIcon);
+  const customTextInputEl = getEl("customText");
+  if (customTextInputEl) {
+    customTextInputEl.addEventListener("input", () => {
+      if (blockImportedRemoteCustomImages) {
+        blockImportedRemoteCustomImages = false;
+      }
+    });
+  }
+  const fqdnUrlInputEl = getEl("fqdnUrl");
+  if (fqdnUrlInputEl) {
+    fqdnUrlInputEl.addEventListener("blur", () => {
+      const normalized = sanitizeFqdnHref(fqdnUrlInputEl.value);
+      if (normalized && normalized !== fqdnUrlInputEl.value.trim()) {
+        fqdnUrlInputEl.value = normalized;
+        renderOutput();
+      }
+    });
+  }
   iconEmbedSvgEl.addEventListener("change", () => {
     if (iconEmbedSvgEl.checked && iconResizeWsrvEl) {
       iconResizeWsrvEl.checked = false;
