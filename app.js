@@ -49,6 +49,10 @@ const iconVariantWrapEl = document.querySelector(".svg-variant-wrap");
 
 const configLocationsEl = document.getElementById("configLocations");
 const addConfigBtn = document.getElementById("addConfigBtn");
+const hostEntriesEl = document.getElementById("hostEntries");
+const addHostBtn = document.getElementById("addHostBtn");
+const networkEntriesEl = document.getElementById("networkEntries");
+const addNetworkBtn = document.getElementById("addNetworkBtn");
 
 let activeTheme = "dark";
 let iconResolvedSrc = "";
@@ -1251,6 +1255,34 @@ function getConfigLocationEntries() {
     .filter((entry) => entry.value);
 }
 
+function getHostEntries() {
+  return Array.from(hostEntriesEl.querySelectorAll(".host-entry-row"))
+    .map((row) => {
+      const iconInput = row.querySelector('input[data-host-icon="1"]');
+      const labelInput = row.querySelector('input[data-host-label="1"]');
+      const urlInput = row.querySelector('input[data-host-url="1"]');
+      return {
+        icon: iconInput ? iconInput.value : "",
+        label: labelInput ? labelInput.value.trim() : "",
+        url: urlInput ? urlInput.value.trim() : "",
+      };
+    })
+    .filter((entry) => entry.label);
+}
+
+function getNetworkEntries() {
+  return Array.from(networkEntriesEl.querySelectorAll(".network-entry-row"))
+    .map((row) => {
+      const iconInput = row.querySelector('input[data-network-icon="1"]');
+      const valueInput = row.querySelector('input[data-network-value="1"]');
+      return {
+        icon: iconInput ? iconInput.value : "",
+        value: valueInput ? valueInput.value.trim() : "",
+      };
+    })
+    .filter((entry) => entry.value);
+}
+
 function buildNoteHtml() {
   const byKey = {};
   const lines = [];
@@ -1265,21 +1297,25 @@ function buildNoteHtml() {
     byKey.title = [buildTextRow({ align: format.align, icon: getEl("titleEmoji").value, textHtml: textToHtml(titleText), format })];
   }
 
-  const fqdnLabel = getEl("fqdnLabel").value.trim();
-  if (fqdnLabel) {
+  const hostEntries = getHostEntries();
+  if (hostEntries.length > 0) {
     const format = getFormat("fqdn");
-    const fqdnUrl = sanitizeFqdnHref(getEl("fqdnUrl").value);
-    const label = textToHtml(fqdnLabel);
-    const linked = fqdnUrl
-      ? `<a href="${escapeHtml(fqdnUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${label}</a>`
-      : label;
-    byKey.fqdn = [buildTextRow({ align: format.align, icon: getEl("fqdnEmoji").value, textHtml: linked, format })];
+    byKey.fqdn = hostEntries.map((entry) => {
+      const fqdnUrl = sanitizeFqdnHref(entry.url);
+      const label = textToHtml(entry.label);
+      const linked = fqdnUrl
+        ? `<a href="${escapeHtml(fqdnUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${label}</a>`
+        : label;
+      return buildTextRow({ align: format.align, icon: entry.icon, textHtml: linked, format });
+    });
   }
 
-  const networkText = getEl("networkText").value.trim();
-  if (networkText) {
+  const networkEntries = getNetworkEntries();
+  if (networkEntries.length > 0) {
     const format = getFormat("network");
-    byKey.network = [buildTextRow({ align: format.align, icon: getEl("networkEmoji").value, textHtml: textToHtml(networkText), format })];
+    byKey.network = networkEntries.map((entry) =>
+      buildTextRow({ align: format.align, icon: entry.icon, textHtml: textToHtml(entry.value), format })
+    );
   }
 
   const configLocations = getConfigLocationEntries();
@@ -1326,10 +1362,12 @@ function updateLengthState(noteHtml) {
 function clearTextFields() {
   iconUrlEl.value = "";
   getEl("titleText").value = "";
-  getEl("fqdnLabel").value = "";
-  getEl("fqdnUrl").value = "";
-  getEl("networkText").value = "";
   getEl("customText").value = "";
+
+  hostEntriesEl.innerHTML = "";
+  hostEntriesEl.append(createHostEntryInput("", "", "🔗"));
+  networkEntriesEl.innerHTML = "";
+  networkEntriesEl.append(createNetworkEntryInput("", "🖥️"));
 
   const configInputs = configLocationsEl.querySelectorAll('input[data-config-location="1"]');
   for (const input of configInputs) {
@@ -1442,7 +1480,16 @@ function validateSettingsSchema(settings, source = "settings") {
     if (!isPlainObject(settings.fields)) {
       throw new Error(`${source} fields must be an object.`);
     }
-    const fieldAllowed = new Set(["titleText", "fqdnLabel", "fqdnUrl", "networkText", "configLocations", "customText"]);
+    const fieldAllowed = new Set([
+      "titleText",
+      "fqdnLabel",
+      "fqdnUrl",
+      "networkText",
+      "hostEntries",
+      "networkEntries",
+      "configLocations",
+      "customText",
+    ]);
     for (const key of Object.keys(settings.fields)) {
       if (!fieldAllowed.has(key)) {
         throw new Error(`${source} fields contains unsupported key "${key}".`);
@@ -1454,6 +1501,51 @@ function validateSettingsSchema(settings, source = "settings") {
     if (settings.fields.fqdnUrl !== undefined) assertMaxTextBytes(settings.fields.fqdnUrl, 4096, `${source} fields.fqdnUrl`);
     if (settings.fields.networkText !== undefined) assertMaxTextBytes(settings.fields.networkText, 4096, `${source} fields.networkText`);
     if (settings.fields.customText !== undefined) assertMaxTextBytes(settings.fields.customText, MAX_IMPORT_FILE_BYTES, `${source} fields.customText`);
+
+    if (settings.fields.hostEntries !== undefined) {
+      if (!Array.isArray(settings.fields.hostEntries)) {
+        throw new Error(`${source} fields.hostEntries must be an array.`);
+      }
+      if (settings.fields.hostEntries.length > 128) {
+        throw new Error(`${source} fields.hostEntries exceeds maximum entries.`);
+      }
+      for (const entry of settings.fields.hostEntries) {
+        if (!isPlainObject(entry)) {
+          throw new Error(`${source} host entry must be an object.`);
+        }
+        const allowedKeys = new Set(["icon", "label", "url"]);
+        for (const key of Object.keys(entry)) {
+          if (!allowedKeys.has(key)) {
+            throw new Error(`${source} host entry contains unsupported key "${key}".`);
+          }
+        }
+        if (entry.icon !== undefined) assertMaxTextBytes(entry.icon, 64, `${source} host entry icon`);
+        if (entry.label !== undefined) assertMaxTextBytes(entry.label, 2048, `${source} host entry label`);
+        if (entry.url !== undefined) assertMaxTextBytes(entry.url, 4096, `${source} host entry url`);
+      }
+    }
+
+    if (settings.fields.networkEntries !== undefined) {
+      if (!Array.isArray(settings.fields.networkEntries)) {
+        throw new Error(`${source} fields.networkEntries must be an array.`);
+      }
+      if (settings.fields.networkEntries.length > 128) {
+        throw new Error(`${source} fields.networkEntries exceeds maximum entries.`);
+      }
+      for (const entry of settings.fields.networkEntries) {
+        if (!isPlainObject(entry)) {
+          throw new Error(`${source} network entry must be an object.`);
+        }
+        const allowedKeys = new Set(["icon", "value"]);
+        for (const key of Object.keys(entry)) {
+          if (!allowedKeys.has(key)) {
+            throw new Error(`${source} network entry contains unsupported key "${key}".`);
+          }
+        }
+        if (entry.icon !== undefined) assertMaxTextBytes(entry.icon, 64, `${source} network entry icon`);
+        if (entry.value !== undefined) assertMaxTextBytes(entry.value, 4096, `${source} network entry value`);
+      }
+    }
 
     if (settings.fields.configLocations !== undefined) {
       if (!Array.isArray(settings.fields.configLocations)) {
@@ -1524,7 +1616,7 @@ function collectSettings() {
   }
 
   return {
-    version: 1,
+    version: 2,
     rowOrder,
     theme: activeTheme,
     icon: {
@@ -1539,9 +1631,8 @@ function collectSettings() {
     },
     fields: {
       titleText: getEl("titleText").value,
-      fqdnLabel: getEl("fqdnLabel").value,
-      fqdnUrl: getEl("fqdnUrl").value,
-      networkText: getEl("networkText").value,
+      hostEntries: getHostEntries(),
+      networkEntries: getNetworkEntries(),
       configLocations: getConfigLocationEntries(),
       customText: getEl("customText").value,
     },
@@ -1635,12 +1726,35 @@ async function applySettings(settings, options = {}) {
 
   if (settings.fields && typeof settings.fields === "object") {
     if (typeof settings.fields.titleText === "string") getEl("titleText").value = settings.fields.titleText;
-    if (typeof settings.fields.fqdnLabel === "string") getEl("fqdnLabel").value = settings.fields.fqdnLabel;
-    if (typeof settings.fields.fqdnUrl === "string") getEl("fqdnUrl").value = settings.fields.fqdnUrl;
-    if (typeof settings.fields.networkText === "string") getEl("networkText").value = settings.fields.networkText;
     if (typeof settings.fields.customText === "string") {
       getEl("customText").value = settings.fields.customText;
       blockImportedRemoteCustomImages = source === "import" && /<img\b/i.test(settings.fields.customText);
+    }
+
+    if (Array.isArray(settings.fields.hostEntries)) {
+      hostEntriesEl.innerHTML = "";
+      const values = settings.fields.hostEntries.length > 0 ? settings.fields.hostEntries : [{ icon: "🔗", label: "", url: "" }];
+      for (const value of values) {
+        if (value && typeof value === "object") {
+          hostEntriesEl.append(createHostEntryInput(String(value.label || ""), String(value.url || ""), String(value.icon || "🔗")));
+        }
+      }
+    } else if (typeof settings.fields.fqdnLabel === "string" || typeof settings.fields.fqdnUrl === "string") {
+      hostEntriesEl.innerHTML = "";
+      hostEntriesEl.append(createHostEntryInput(String(settings.fields.fqdnLabel || ""), String(settings.fields.fqdnUrl || ""), "🔗"));
+    }
+
+    if (Array.isArray(settings.fields.networkEntries)) {
+      networkEntriesEl.innerHTML = "";
+      const values = settings.fields.networkEntries.length > 0 ? settings.fields.networkEntries : [{ icon: "🖥️", value: "" }];
+      for (const value of values) {
+        if (value && typeof value === "object") {
+          networkEntriesEl.append(createNetworkEntryInput(String(value.value || ""), String(value.icon || "🖥️")));
+        }
+      }
+    } else if (typeof settings.fields.networkText === "string") {
+      networkEntriesEl.innerHTML = "";
+      networkEntriesEl.append(createNetworkEntryInput(String(settings.fields.networkText || ""), "🖥️"));
     }
 
     if (Array.isArray(settings.fields.configLocations)) {
@@ -1783,6 +1897,7 @@ function normalizeTemplateCatalog(payload) {
 async function loadPublicTemplateCatalog() {
   try {
     const indexCandidates = [
+      "./templates/index.json",
       "./templates/services/index.json",
       "./public/index.json",
     ];
@@ -2101,6 +2216,125 @@ function setTheme(theme) {
   }
 }
 
+function createStackRemoveButton(row) {
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "icon-clear";
+  remove.textContent = "✕";
+  remove.addEventListener("click", () => {
+    row.remove();
+    renderOutput();
+  });
+  return remove;
+}
+
+function createHostEntryInput(initialLabel = "", initialUrl = "", initialIcon = "🔗") {
+  const row = document.createElement("div");
+  row.className = "stack-row host-entry-row";
+
+  const iconField = document.createElement("label");
+  iconField.className = "icon-field";
+  iconField.textContent = "";
+
+  const iconWrap = document.createElement("span");
+  iconWrap.className = "icon-input-wrap";
+
+  const iconInput = document.createElement("input");
+  iconInput.type = "text";
+  iconInput.maxLength = 8;
+  iconInput.value = initialIcon;
+  iconInput.setAttribute("data-host-icon", "1");
+
+  const iconClear = document.createElement("button");
+  iconClear.type = "button";
+  iconClear.className = "icon-clear";
+  iconClear.textContent = "✕";
+  iconClear.title = "Clear icon";
+  iconClear.addEventListener("click", () => {
+    iconInput.value = "";
+    renderOutput();
+  });
+
+  iconWrap.append(iconInput, iconClear);
+  iconField.append(iconWrap);
+
+  const fieldStack = document.createElement("div");
+  fieldStack.className = "field-stack host-fields";
+
+  const labelInput = document.createElement("input");
+  labelInput.type = "text";
+  labelInput.placeholder = "HOST";
+  labelInput.value = initialLabel;
+  labelInput.setAttribute("data-host-label", "1");
+
+  const urlInput = document.createElement("input");
+  urlInput.type = "url";
+  urlInput.placeholder = "HOST URL";
+  urlInput.value = initialUrl;
+  urlInput.setAttribute("data-host-url", "1");
+  urlInput.addEventListener("blur", () => {
+    const normalized = sanitizeFqdnHref(urlInput.value);
+    if (normalized && normalized !== urlInput.value.trim()) {
+      urlInput.value = normalized;
+      renderOutput();
+    }
+  });
+
+  fieldStack.append(labelInput, urlInput);
+
+  const remove = createStackRemoveButton(row);
+
+  row.append(iconField, fieldStack, remove);
+  iconInput.addEventListener("input", renderOutput);
+  labelInput.addEventListener("input", renderOutput);
+  urlInput.addEventListener("input", renderOutput);
+  return row;
+}
+
+function createNetworkEntryInput(initialValue = "", initialIcon = "🖥️") {
+  const row = document.createElement("div");
+  row.className = "stack-row network-entry-row";
+
+  const iconField = document.createElement("label");
+  iconField.className = "icon-field";
+  iconField.textContent = "";
+
+  const iconWrap = document.createElement("span");
+  iconWrap.className = "icon-input-wrap";
+
+  const iconInput = document.createElement("input");
+  iconInput.type = "text";
+  iconInput.maxLength = 8;
+  iconInput.value = initialIcon;
+  iconInput.setAttribute("data-network-icon", "1");
+
+  const iconClear = document.createElement("button");
+  iconClear.type = "button";
+  iconClear.className = "icon-clear";
+  iconClear.textContent = "✕";
+  iconClear.title = "Clear icon";
+  iconClear.addEventListener("click", () => {
+    iconInput.value = "";
+    renderOutput();
+  });
+
+  iconWrap.append(iconInput, iconClear);
+  iconField.append(iconWrap);
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "NETWORK ADDRESS";
+  input.value = initialValue;
+  input.setAttribute("data-network-value", "1");
+
+  const remove = createStackRemoveButton(row);
+
+  row.append(iconField, input, remove);
+  iconInput.addEventListener("input", renderOutput);
+  input.addEventListener("input", renderOutput);
+  return row;
+}
+
 function createConfigLocationInput(initialValue = "", initialIcon = "📁") {
   const row = document.createElement("div");
   row.className = "stack-row config-location-row";
@@ -2137,14 +2371,7 @@ function createConfigLocationInput(initialValue = "", initialIcon = "📁") {
   input.value = initialValue;
   input.setAttribute("data-config-location", "1");
 
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "icon-clear";
-  remove.textContent = "✕";
-  remove.addEventListener("click", () => {
-    row.remove();
-    renderOutput();
-  });
+  const remove = createStackRemoveButton(row);
 
   row.append(iconField, input, remove);
   iconInput.addEventListener("input", renderOutput);
@@ -2275,8 +2502,18 @@ function bootstrap() {
   bindStyleConflicts();
   initializeRowVisibility();
 
+  hostEntriesEl.append(createHostEntryInput("www.proxmox.com", "https://www.proxmox.com/", "🔗"));
+  networkEntriesEl.append(createNetworkEntryInput("10.2.0.40:8443", "🖥️"));
   configLocationsEl.append(createConfigLocationInput("/etc/app/config.yml"));
 
+  addHostBtn.addEventListener("click", () => {
+    hostEntriesEl.append(createHostEntryInput("", "", "🔗"));
+    renderOutput();
+  });
+  addNetworkBtn.addEventListener("click", () => {
+    networkEntriesEl.append(createNetworkEntryInput("", "🖥️"));
+    renderOutput();
+  });
   addConfigBtn.addEventListener("click", () => {
     configLocationsEl.append(createConfigLocationInput(""));
     renderOutput();
@@ -2347,16 +2584,6 @@ function bootstrap() {
     customTextInputEl.addEventListener("input", () => {
       if (blockImportedRemoteCustomImages) {
         blockImportedRemoteCustomImages = false;
-      }
-    });
-  }
-  const fqdnUrlInputEl = getEl("fqdnUrl");
-  if (fqdnUrlInputEl) {
-    fqdnUrlInputEl.addEventListener("blur", () => {
-      const normalized = sanitizeFqdnHref(fqdnUrlInputEl.value);
-      if (normalized && normalized !== fqdnUrlInputEl.value.trim()) {
-        fqdnUrlInputEl.value = normalized;
-        renderOutput();
       }
     });
   }
